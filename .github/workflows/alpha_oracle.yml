@@ -1,0 +1,46 @@
+name: Alpha-Oracle-Final-Official
+
+on:
+  schedule:
+    - cron: '*/15 * * * *' # 每 15 分鐘運行一次
+  workflow_dispatch: # 支援手動觸發測試
+
+jobs:
+  trade_job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 確保 CSV 可以回寫
+
+    # 核心修正：在 Job 層級強制使用 Node.js 24
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install requests pandas numpy
+
+      - name: Run Alpha Oracle Bot
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python main.py
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "Alpha-Oracle-Bot"
+          git config --global user.email "bot@alpha-oracle.com"
+          git add active_trades.csv trade_history.csv || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update trade logs [skip ci]"
+            git push
+          fi
