@@ -18,7 +18,7 @@ def send_tg(msg):
     try:
         res = requests.post(url, json={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
         res.raise_for_status()
-        logging.info(f'TG sent OK')
+        logging.info('TG sent OK')
     except Exception as e:
         logging.error(f'TG error: {e}')
 
@@ -39,18 +39,21 @@ def fetch_okx(instId, bar='15m', limit='300'):
 
 def get_sentiment(instId):
     try:
+        # Long/Short ratio - use first and last available data points
         ls_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?instId={instId}&period=5m", timeout=10).json()
-        ls_curr, ls_prev = float(ls_res['data'][0][1]), float(ls_res['data'][2][1])
-        base = instId.split('-')[0]
-        s_df = fetch_okx(f'{base}-USDT-SWAP', bar='5m', limit='20')
-        cvd_up = s_df['c'].iloc[-1] > s_df['c'].iloc[-10] if s_df is not None and len(s_df) >= 10 else False
-        oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?instId={instId}&period=5m", timeout=10).json()
-        fuel = float(oi_res['data'][0][1]) > float(oi_res['data'][2][1]) if len(oi_res.get('data',[])) > 2 else False
-        logging.info(f'  Sentiment {instId}: ls={ls_curr:.3f}vs{ls_prev:.3f} cvd={cvd_up} fuel={fuel}')
-        return ls_curr, ls_prev, cvd_up, fuel
+        ls_data = ls_res.get('data', [])
+        if len(ls_data) < 2:
+            raise ValueError(f'ls_data only {len(ls_data)} rows')
+        ls_curr = float(ls_data[0][1])
+        ls_prev = float(ls_data[-1][1])
+        # CVD: use swap price momentum as proxy
+        s_df = fetch_okx(instId, bar='5m', limit='20')
+        cvd_up = bool(s_df is not None and len(s_df) >= 10 and s_df['c'].iloc[-1] > s_df['c'].iloc[-10])
+        logging.info(f'  Sentiment {instId}: ls={ls_curr:.3f}vs{ls_prev:.3f} cvd={cvd_up}')
+        return ls_curr, ls_prev, cvd_up
     except Exception as e:
         logging.error(f'get_sentiment error {instId}: {e}')
-        return 1.0, 1.0, False, False
+        return 1.0, 1.0, False
 
 def main():
     now_tw = datetime.utcnow() + timedelta(hours=8)
@@ -77,31 +80,33 @@ def main():
         logging.info(f'[SCAN] {instId}')
         df_4h = fetch_okx(instId, '4H', '300')
         if df_4h is None or len(df_4h) < 50:
-            logging.warning(f'[SKIP] {instId} 4H資料不足 ({len(df_4h) if df_4h is not None else 0})')
+            logging.warning(f'[SKIP] {instId} 4H insufficient ({len(df_4h) if df_4h is not None else 0})')
             continue
         span = min(200, len(df_4h))
         ema200 = df_4h['c'].ewm(span=span, adjust=False).mean().iloc[-1]
-        ls_c, ls_p, cvd_up, fuel = get_sentiment(instId)
+        ls_c, ls_p, cvd_up = get_sentiment(instId)
         df_15 = fetch_okx(instId, '15m', '100')
         if df_15 is None or len(df_15) < 25: continue
         curr_p = df_15['c'].iloc[-1]
         atr = (df_15['h']-df_15['l']).rolling(14).mean().iloc[-1]
         h_max = df_15['h'].iloc[-20:-2].max()
         l_min = df_15['l'].iloc[-20:-2].min()
-        long_c  = (curr_p>ema200) and (curr_p>h_max) and cvd_up and (ls_c<ls_p) and fuel
-        short_c = (curr_p<ema200) and (curr_p<l_min) and (not cvd_up) and (ls_c>ls_p) and fuel
-        logging.info(f'  {instId} p={curr_p:.4f} ema={ema200:.4f} LONG={long_c}(p>ema:{curr_p>ema200},brkout:{curr_p>h_max},cvd:{cvd_up},ls:{ls_c<ls_p},fuel:{fuel}) SHORT={short_c}')
+        # LONG: price above EMA200 + breakout above recent high + momentum up + more shorts than before
+        long_c  = (curr_p > ema200) and (curr_p > h_max) and cvd_up and (ls_c < ls_p)
+        # SHORT: price below EMA200 + breakdown below recent low + momentum down + more longs than before
+        short_c = (curr_p < ema200) and (curr_p < l_min) and (not cvd_up) and (ls_c > ls_p)
+        logging.info(f'  {instId} p={curr_p:.4f} ema={ema200:.4f} LONG={long_c}(p>ema:{curr_p>ema200},brkout:{curr_p>h_max},cvd:{cvd_up},ls_drop:{ls_c<ls_p}) SHORT={short_c}(p<ema:{curr_p<ema200},brkdn:{curr_p<l_min},!cvd:{not cvd_up},ls_rise:{ls_c>ls_p})')
         if long_c or short_c:
             side = 'LONG' if long_c else 'SHORT'
             sl  = curr_p-(atr*1.5) if long_c else curr_p+(atr*1.5)
             tp1 = curr_p+atr if long_c else curr_p-atr
             tp3 = curr_p+atr*4 if long_c else curr_p-atr*4
             still_active.append({'instId':instId,'side':side,'entry':curr_p,'sl':sl,'tp1':tp1,'tp3':tp3,'tp1_hit':0})
-            send_tg(f"U0001f3af *Alpha 燃料狙擊*\n\U0001f48e #{instId.split('-')[0]} | {side}\nU0001f4cd 進場: {curr_p:.4f}\nU0001f6ab 止損: {sl:.4f}")
+            send_tg(f"U0001f3af *Alpha 燃料狙擊*\n\U0001f48e #{instId.split('-')[0]} | {side}\nU0001f4cd 進場: `{curr_p:.4f}`\nU0001f6ab 止損: `{sl:.4f}`")
     pd.DataFrame(still_active).to_csv(LOG_FILE, index=False)
     if finished:
         pd.DataFrame(finished).to_csv(HISTORY_FILE, mode='a', header=not os.path.exists(HISTORY_FILE), index=False)
-    logging.info(f'=== 完成 持倉: {len(still_active)} ===')
+    logging.info(f'=== Done, active positions: {len(still_active)} ===')
 
 if __name__ == '__main__':
     main()
