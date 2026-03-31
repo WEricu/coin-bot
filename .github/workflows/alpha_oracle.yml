@@ -2,7 +2,7 @@ name: Alpha-Oracle-Final-Official
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # 每 15 分鐘運行一次
+    - cron: '*/10 * * * *'→ Runs every 15 minutes # 每 15 分鐘運行一次
   workflow_dispatch: # 支援手動觸發測試
 
 jobs:
@@ -34,13 +34,3 @@ jobs:
         run: python main.py
 
       - name: Commit and Push Changes
-        run: |
-          git config --global user.name "Alpha-Oracle-Bot"
-          git config --global user.email "bot@alpha-oracle.com"
-          git add active_trades.csv trade_history.csv || true
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Auto-update trade logs [skip ci]"
-            git push
-          fi
