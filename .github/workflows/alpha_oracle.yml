@@ -2,7 +2,7 @@ name: Alpha-Oracle-Final-Official
 
 on:
   schedule:
-    - cron: '*/10 * * * *'→ Runs every 15 minutes # 每 15 分鐘運行一次
+    - cron: '*/10 * * * *'→ Runs every 10 minutes # 每 10 分鐘運行一次
   workflow_dispatch: # 支援手動觸發測試
 
 jobs:
